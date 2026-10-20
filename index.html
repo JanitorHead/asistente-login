@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>Entrar en la UCA</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--tg-theme-bg-color, #fff);
+    --fg: var(--tg-theme-text-color, #111);
+    --muted: var(--tg-theme-hint-color, #888);
+    --field: var(--tg-theme-secondary-bg-color, #f1f1f4);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-fg: var(--tg-theme-button-text-color, #fff);
+    --error: var(--tg-theme-destructive-text-color, #d93025);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px 20px; background: var(--bg); color: var(--fg);
+    font: 16px/1.4 -apple-system, system-ui, sans-serif;
+  }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 24px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 0 0 6px 4px; }
+  input {
+    width: 100%; font: inherit; color: var(--fg); background: var(--field);
+    border: 0; border-radius: 12px; padding: 14px; margin: 0 0 16px;
+  }
+  input:focus { outline: 2px solid var(--accent); }
+  button {
+    width: 100%; font: inherit; font-weight: 600; border: 0; border-radius: 12px;
+    padding: 14px; background: var(--accent); color: var(--accent-fg); margin-top: 4px;
+  }
+  button:disabled { opacity: .6; }
+  #estado { min-height: 1.4em; margin: 14px 4px 0; font-size: 14px; }
+  #estado.error { color: var(--error); }
+  .nota { color: var(--muted); font-size: 12px; margin: 28px 4px 0; }
+</style>
+</head>
+<body>
+<h1>Entrar en la UCA</h1>
+<p class="sub">Con tu usuario y contraseña de siempre (los del campus virtual).</p>
+<form id="f" autocomplete="on">
+  <label for="u">Usuario</label>
+  <input id="u" name="username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required>
+  <label for="p">Contraseña</label>
+  <input id="p" name="password" type="password" autocomplete="current-password" required>
+  <button id="b" type="submit">Entrar</button>
+</form>
+<p id="estado" role="status"></p>
+<p class="nota">La contraseña va directa de este móvil a la UCA. El asistente solo recibe, cifrado, un permiso de acceso que caduca solo.</p>
+<script>
+(() => {
+  const tg = window.Telegram && window.Telegram.WebApp;
+  const q = new URLSearchParams(location.search);
+  const cfg = { n: q.get("n"), k: q.get("k"), r: q.get("r"), c: q.get("c"), ak: q.get("ak"), sk: q.get("sk"), t: q.get("t") || "jwe_crue" };
+  const $ = (id) => document.getElementById(id);
+  const estado = (txt, error = false) => { $("estado").textContent = txt; $("estado").className = error ? "error" : ""; };
+
+  if (tg) { tg.ready(); tg.expand(); }
+  $("u").value = q.get("u") || "";
+  if (!tg || tg.platform === "unknown" || Object.values(cfg).some((v) => !v)) {
+    $("b").disabled = true;
+    estado("Abre esta página desde el botón «Entrar en la UCA» del bot.", true);
+    return;
+  }
+
+  const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+  const unb64url = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (ch) => ch.charCodeAt(0));
+
+  async function cognitoLogin(user, password) {
+    const resp = await fetch(`https://cognito-idp.${cfg.r}.amazonaws.com/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth" },
+      body: JSON.stringify({
+        AuthFlow: "USER_PASSWORD_AUTH",
+        ClientId: cfg.c,
+        AuthParameters: { USERNAME: `${cfg.ak}-${user}`.toLowerCase(), PASSWORD: password },
+        ClientMetadata: { access_key: cfg.ak, secret_key: cfg.sk, password, auth_type: cfg.t },
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok && data.AuthenticationResult && data.AuthenticationResult.RefreshToken) return data.AuthenticationResult.RefreshToken;
+    const tipo = String(data.__type || "").split("#").pop();
+    const msg = String(data.message || "");
+    if (data.ChallengeName) throw new Error(`La UCA pide un paso extra (${data.ChallengeName}). Entra una vez en la app oficial de la UCA y vuelve a probar.`);
+    if (/Login error/i.test(msg) || tipo === "NotAuthorizedException" || tipo === "UserNotFoundException") throw new Error("Usuario o contraseña incorrectos.");
+    if (tipo === "TooManyRequestsException" || tipo === "LimitExceededException") throw new Error("Demasiados intentos seguidos. Espera unos minutos.");
+    throw new Error(`La UCA no ha respondido bien (${tipo || resp.status}). Prueba otra vez.`);
+  }
+
+  async function seal(refreshToken) {
+    const pub = await crypto.subtle.importKey("spki", unb64url(cfg.k), { name: "RSA-OAEP", hash: "SHA-256" }, false, ["encrypt"]);
+    const aes = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt"]);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const plain = new TextEncoder().encode(JSON.stringify({ n: cfg.n, rt: refreshToken }));
+    const c = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, aes, plain);
+    const k = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, pub, await crypto.subtle.exportKey("raw", aes));
+    return JSON.stringify({ v: 1, k: b64(k), iv: b64(iv), c: b64(c) });
+  }
+
+  $("f").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const user = $("u").value.trim();
+    const password = $("p").value;
+    $("b").disabled = true;
+    estado("Entrando…");
+    try {
+      const payload = await seal(await cognitoLogin(user, password));
+      $("p").value = "";
+      if (payload.length > 4096) throw new Error("El acceso ocupa demasiado para Telegram. Avisa al asistente.");
+      estado("Hecho. Volviendo al chat…");
+      tg.sendData(payload);
+    } catch (e) {
+      estado(e.message || "Algo ha fallado. Prueba otra vez.", true);
+      $("b").disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>
