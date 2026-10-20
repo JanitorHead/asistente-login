@@ -51,18 +51,18 @@
   <button id="b" type="submit">Entrar</button>
 </form>
 <p id="estado" role="status"></p>
-<p class="nota">La contraseña va directa de este móvil a la UCA. El asistente solo recibe, cifrado, un permiso de acceso que caduca solo.</p>
+<p class="nota">La contraseña viaja cifrada y solo tu asistente puede leerla. La usa una vez para entrar en la UCA y no la guarda.</p>
 <script>
 (() => {
   const tg = window.Telegram && window.Telegram.WebApp;
   const q = new URLSearchParams(location.search);
-  const cfg = { n: q.get("n"), k: q.get("k"), r: q.get("r"), p: q.get("p"), c: q.get("c"), ak: q.get("ak"), sk: q.get("sk"), t: q.get("t") || "jwe_crue" };
+  const cfg = { n: q.get("n"), k: q.get("k") };
   const $ = (id) => document.getElementById(id);
   const estado = (txt, error = false) => { $("estado").textContent = txt; $("estado").className = error ? "error" : ""; };
 
   if (tg) { tg.ready(); tg.expand(); }
   $("u").value = q.get("u") || "";
-  if (!tg || tg.platform === "unknown" || Object.values(cfg).some((v) => !v)) {
+  if (!tg || tg.platform === "unknown" || !cfg.n || !cfg.k) {
     $("b").disabled = true;
     estado("Abre esta página desde el botón «Entrar en la UCA» del bot.", true);
     return;
@@ -71,102 +71,11 @@
   const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
   const unb64url = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (ch) => ch.charCodeAt(0));
 
-  // SRP-BEGIN — mismo SRP que Amplify (signIn por defecto de la app oficial)
-  const SRP_N = BigInt("0x" +
-    "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DD" +
-    "EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED" +
-    "EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F" +
-    "83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3B" +
-    "E39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA0510" +
-    "15728E5A8AAAC42DAD33170D04507A33A85521ABDF1CBA64ECFB850458DBEF0A8AEA71575D060C7DB3970F85A6E1E4C7" +
-    "ABF5AE8CDB0933D71E8C94E04A25619DCEE3D2261AD2EE6BF12FFA06D98A0864D87602733EC86A64521F2B18177B200C" +
-    "BBE117577A615D6C770988C0BAD946E208E24FA074E5AB3143DB5BFCE0FD108E4B82D120A93AD2CAFFFFFFFFFFFFFFFF");
-  const SRP_G = 2n;
-  const hexOf = (n) => n.toString(16);
-  const padHex = (h) => (h.length % 2 ? "0" + h : /^[89a-f]/i.test(h) ? "00" + h : h);
-  const bytesFromHex = (h) => Uint8Array.from(h.match(/../g), (x) => parseInt(x, 16));
-  const hexFromBytes = (b) => Array.from(new Uint8Array(b), (x) => x.toString(16).padStart(2, "0")).join("");
-  const sha256Hex = async (bytes) => hexFromBytes(await crypto.subtle.digest("SHA-256", bytes));
-  const hashHex = (h) => sha256Hex(bytesFromHex(h));
-  const hmac = async (key, data) => new Uint8Array(await crypto.subtle.sign("HMAC", await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]), data));
-  const concat = (...arrs) => { const out = new Uint8Array(arrs.reduce((s, a) => s + a.length, 0)); let o = 0; for (const a of arrs) { out.set(a, o); o += a.length; } return out; };
-  const utf8 = (s) => new TextEncoder().encode(s);
-  const modPow = (b, e, m) => { let r = 1n; b %= m; while (e > 0n) { if (e & 1n) r = (r * b) % m; e >>= 1n; b = (b * b) % m; } return r; };
-  const mod = (a, m) => ((a % m) + m) % m;
-  const nowString = (d = new Date()) => {
-    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    const p = (n) => String(n).padStart(2, "0");
-    return `${days[d.getUTCDay()]} ${months[d.getUTCMonth()]} ${d.getUTCDate()} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} UTC ${d.getUTCFullYear()}`;
-  };
-  async function srpStart(aHex) {
-    const a = aHex ? BigInt("0x" + aHex) : BigInt("0x" + hexFromBytes(crypto.getRandomValues(new Uint8Array(128))));
-    const A = modPow(SRP_G, a, SRP_N);
-    return { a, A, k: BigInt("0x" + (await hashHex(padHex(hexOf(SRP_N)) + padHex(hexOf(SRP_G))))) };
-  }
-  async function srpSignature({ a, A, k }, poolName, params, password, timestamp) {
-    const B = BigInt("0x" + params.SRP_B);
-    if (B % SRP_N === 0n) throw new Error("SRP: B inválido");
-    const u = BigInt("0x" + (await hashHex(padHex(hexOf(A)) + padHex(hexOf(B)))));
-    const userHash = await sha256Hex(utf8(`${poolName}${params.USER_ID_FOR_SRP}:${password}`));
-    const x = BigInt("0x" + (await hashHex(padHex(hexOf(BigInt("0x" + params.SALT))) + userHash)));
-    const S = modPow(mod(B - k * modPow(SRP_G, x, SRP_N), SRP_N), a + u * x, SRP_N);
-    const prk = await hmac(bytesFromHex(padHex(hexOf(u))), bytesFromHex(padHex(hexOf(S))));
-    const hkdf = (await hmac(prk, concat(utf8("Caldera Derived Key"), Uint8Array.of(1)))).slice(0, 16);
-    const msg = concat(utf8(poolName), utf8(params.USER_ID_FOR_SRP), Uint8Array.from(atob(params.SECRET_BLOCK), (c) => c.charCodeAt(0)), utf8(timestamp));
-    return b64(await hmac(hkdf, msg));
-  }
-  // SRP-END
-
-  async function cognito(target, body) {
-    const resp = await fetch(`https://cognito-idp.${cfg.r}.amazonaws.com/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": `AWSCognitoIdentityProviderService.${target}` },
-      body: JSON.stringify(body),
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (resp.ok) return data;
-    const tipo = String(data.__type || "").split("#").pop();
-    const msg = String(data.message || "");
-    const detalle = ` [${tipo || resp.status}: ${msg.replace(/^PreAuthentication failed with error /, "")}]`;
-    if (/Login error/i.test(msg) || tipo === "NotAuthorizedException" || tipo === "UserNotFoundException") throw new Error("Usuario o contraseña incorrectos." + detalle);
-    if (tipo === "TooManyRequestsException" || tipo === "LimitExceededException") throw new Error("Demasiados intentos seguidos. Espera unos minutos." + detalle);
-    throw new Error("La UCA no ha respondido bien. Prueba otra vez." + detalle);
-  }
-
-  async function cognitoLogin(user, password) {
-    const meta = { access_key: cfg.ak, secret_key: cfg.sk, password, auth_type: cfg.t };
-    const srp = await srpStart();
-    const start = await cognito("InitiateAuth", {
-      AuthFlow: "USER_SRP_AUTH",
-      ClientId: cfg.c,
-      AuthParameters: { USERNAME: `${cfg.ak}-${user}`.toLowerCase(), SRP_A: hexOf(srp.A) },
-      ClientMetadata: meta,
-    });
-    if (start.ChallengeName !== "PASSWORD_VERIFIER") throw new Error(`La UCA pide un paso que esta página no sabe hacer (${start.ChallengeName || "?"}).`);
-    const p = start.ChallengeParameters;
-    const timestamp = nowString();
-    const done = await cognito("RespondToAuthChallenge", {
-      ChallengeName: "PASSWORD_VERIFIER",
-      ClientId: cfg.c,
-      ChallengeResponses: {
-        USERNAME: p.USER_ID_FOR_SRP,
-        PASSWORD_CLAIM_SECRET_BLOCK: p.SECRET_BLOCK,
-        TIMESTAMP: timestamp,
-        PASSWORD_CLAIM_SIGNATURE: await srpSignature(srp, cfg.p.split("_")[1], p, password, timestamp),
-      },
-      Session: start.Session,
-      ClientMetadata: meta,
-    });
-    if (done.AuthenticationResult && done.AuthenticationResult.RefreshToken) return done.AuthenticationResult.RefreshToken;
-    throw new Error(`La UCA pide un paso que esta página no sabe hacer (${done.ChallengeName || "?"}).`);
-  }
-
-  async function seal(refreshToken, user) {
+  async function seal(user, password) {
     const pub = await crypto.subtle.importKey("spki", unb64url(cfg.k), { name: "RSA-OAEP", hash: "SHA-256" }, false, ["encrypt"]);
     const aes = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt"]);
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    const plain = new TextEncoder().encode(JSON.stringify({ n: cfg.n, rt: refreshToken, u: user }));
+    const plain = new TextEncoder().encode(JSON.stringify({ n: cfg.n, u: user, pw: password }));
     const c = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, aes, plain);
     const k = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, pub, await crypto.subtle.exportKey("raw", aes));
     return JSON.stringify({ v: 1, k: b64(k), iv: b64(iv), c: b64(c) });
@@ -174,18 +83,14 @@
 
   $("f").addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const user = $("u").value.trim();
-    const password = $("p").value;
     $("b").disabled = true;
-    estado("Entrando…");
     try {
-      const payload = await seal(await cognitoLogin(user, password), user);
+      const payload = await seal($("u").value.trim(), $("p").value);
       $("p").value = "";
-      if (payload.length > 4096) throw new Error("El acceso ocupa demasiado para Telegram. Avisa al asistente.");
-      estado("Hecho. Volviendo al chat…");
+      estado("Enviado. Vuelve al chat: allí te digo si ha entrado.");
       tg.sendData(payload);
     } catch (e) {
-      estado(e.message || "Algo ha fallado. Prueba otra vez.", true);
+      estado("No he podido preparar el envío. Prueba otra vez.", true);
       $("b").disabled = false;
     }
   });
