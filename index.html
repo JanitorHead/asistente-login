@@ -86,10 +86,11 @@
     if (resp.ok && data.AuthenticationResult && data.AuthenticationResult.RefreshToken) return data.AuthenticationResult.RefreshToken;
     const tipo = String(data.__type || "").split("#").pop();
     const msg = String(data.message || "");
+    const detalle = ` [${tipo || resp.status}: ${msg.replace(/^PreAuthentication failed with error /, "")}]`;
     if (data.ChallengeName) throw new Error(`La UCA pide un paso extra (${data.ChallengeName}). Entra una vez en la app oficial de la UCA y vuelve a probar.`);
-    if (/Login error/i.test(msg) || tipo === "NotAuthorizedException" || tipo === "UserNotFoundException") throw new Error("Usuario o contraseña incorrectos.");
-    if (tipo === "TooManyRequestsException" || tipo === "LimitExceededException") throw new Error("Demasiados intentos seguidos. Espera unos minutos.");
-    throw new Error(`La UCA no ha respondido bien (${tipo || resp.status}). Prueba otra vez.`);
+    if (/Login error/i.test(msg) || tipo === "NotAuthorizedException" || tipo === "UserNotFoundException") throw new Error("Usuario o contraseña incorrectos." + detalle);
+    if (tipo === "TooManyRequestsException" || tipo === "LimitExceededException") throw new Error("Demasiados intentos seguidos. Espera unos minutos." + detalle);
+    throw new Error("La UCA no ha respondido bien. Prueba otra vez." + detalle);
   }
 
   async function seal(refreshToken) {
