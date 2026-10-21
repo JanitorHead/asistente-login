@@ -41,30 +41,43 @@
 </style>
 </head>
 <body>
-<h1>Entrar en la UCA</h1>
-<p class="sub">Con tu usuario y contraseña de siempre (los del campus virtual).</p>
+<h1 id="titulo">Entrar en la UCA</h1>
+<p class="sub" id="sub">Con tu usuario y contraseña de siempre (los del campus virtual).</p>
 <form id="f" autocomplete="on">
-  <label for="u">Usuario</label>
+  <label for="u" id="ul">Usuario</label>
   <input id="u" name="username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required>
   <label for="p">Contraseña</label>
   <input id="p" name="password" type="password" autocomplete="current-password" required>
   <button id="b" type="submit">Entrar</button>
 </form>
 <p id="estado" role="status"></p>
-<p class="nota">La contraseña viaja cifrada y solo tu asistente puede leerla. La usa una vez para entrar en la UCA y no la guarda.</p>
+<p class="nota" id="nota">La contraseña viaja cifrada y solo tu asistente puede leerla. La usa una vez para entrar en la UCA y no la guarda.</p>
 <script>
 (() => {
   const tg = window.Telegram && window.Telegram.WebApp;
   const q = new URLSearchParams(location.search);
-  const cfg = { n: q.get("n"), k: q.get("k") };
+  const cfg = { n: q.get("n"), k: q.get("k"), s: q.get("s") || "uca" };
   const $ = (id) => document.getElementById(id);
   const estado = (txt, error = false) => { $("estado").textContent = txt; $("estado").className = error ? "error" : ""; };
+  const guarda = "La contraseña viaja cifrada y solo tu asistente puede leerla. La guarda cifrada para entrar por ti.";
+  const TEXTOS = {
+    uca: null,
+    r0: { titulo: "Entrar en R0 Prácticas", sub: "Con el usuario y la contraseña de R0 (no son los de la UCA).", ul: "Usuario", nota: guarda },
+    remnote: { titulo: "Entrar en RemNote", sub: "Con el correo y la contraseña de tu cuenta de RemNote.", ul: "Correo", nota: guarda },
+  };
+  if (!(cfg.s in TEXTOS)) cfg.s = "uca";
+  const t = TEXTOS[cfg.s];
+  if (t) {
+    document.title = t.titulo;
+    for (const id of ["titulo", "sub", "ul", "nota"]) $(id).textContent = t[id];
+    if (cfg.s === "remnote") { $("u").type = "email"; $("u").autocomplete = "email"; }
+  }
 
   if (tg) { tg.ready(); tg.expand(); }
   $("u").value = q.get("u") || "";
   if (!tg || tg.platform === "unknown" || !cfg.n || !cfg.k) {
     $("b").disabled = true;
-    estado("Abre esta página desde el botón «Entrar en la UCA» del bot.", true);
+    estado(`Abre esta página desde el botón «${t ? t.titulo : "Entrar en la UCA"}» del bot.`, true);
     return;
   }
 
@@ -75,7 +88,7 @@
     const pub = await crypto.subtle.importKey("spki", unb64url(cfg.k), { name: "RSA-OAEP", hash: "SHA-256" }, false, ["encrypt"]);
     const aes = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt"]);
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    const plain = new TextEncoder().encode(JSON.stringify({ n: cfg.n, u: user, pw: password }));
+    const plain = new TextEncoder().encode(JSON.stringify({ n: cfg.n, s: cfg.s, u: user, pw: password }));
     const c = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, aes, plain);
     const k = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, pub, await crypto.subtle.exportKey("raw", aes));
     return JSON.stringify({ v: 1, k: b64(k), iv: b64(iv), c: b64(c) });
